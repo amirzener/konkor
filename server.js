@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const mysql = require('mysql2/promise');
-require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -11,22 +10,33 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json());
 
-// کلید مخفی برای JWT (در محیط واقعی باید پیچیده و امن باشد)
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+// middleware برای لاگ کردن درخواست‌ها
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
+
+// کلید مخفی برای JWT
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key';
 
 // ایجاد اتصال به پایگاه داده
 const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'online_exam_system',
-    charset: 'utf8mb4'
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    charset: 'utf8mb4',
+    connectTimeout: 60000, // افزایش timeout اتصال
+    acquireTimeout: 60000, // افزایش timeout کسب اتصال
+    timeout: 60000, // افزایش timeout کلی
 };
 
 // Middleware برای احراز هویت
 const authenticateToken = async (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
+
+    console.log('توکن دریافت شده:', token ? 'وجود دارد' : 'وجود ندارد');
 
     if (!token) {
         return res.status(401).json({ error: 'دسترسی غیرمجاز. توکن احراز هویت ارائه نشده است.' });
@@ -35,19 +45,65 @@ const authenticateToken = async (req, res, next) => {
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
         req.user = decoded;
+        console.log('توکن معتبر است. کاربر:', decoded.userId);
         next();
     } catch (error) {
+        console.error('خطا در بررسی توکن:', error.message);
         return res.status(403).json({ error: 'توکن نامعتبر است.' });
     }
 };
 
+// Route برای تست سلامت سرور
+app.get('/api/health', (req, res) => {
+  console.log('درخواست سلامت دریافت شد');
+  res.json({ 
+    status: 'OK', 
+    message: 'سرور فعال است',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Route برای تست اتصال به دیتابیس
+app.get('/api/test-db', async (req, res) => {
+  console.log('تست اتصال به دیتابیس درخواست شد');
+  
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    console.log('اتصال به دیتابیس موفقیت‌آمیز بود');
+    
+    const [rows] = await connection.execute('SELECT 1 as test');
+    await connection.end();
+    
+    res.json({ 
+      status: 'OK', 
+      message: 'اتصال به دیتابیس موفقیت‌آمیز بود',
+      data: rows
+    });
+  } catch (error) {
+    console.error('خطا در اتصال به دیتابیس:', error.message);
+    res.status(500).json({ 
+      status: 'ERROR', 
+      message: 'خطا در اتصال به دیتابیس: ' + error.message,
+      dbConfig: {
+        host: dbConfig.host,
+        user: dbConfig.user,
+        database: dbConfig.database,
+        hasPassword: !!dbConfig.password
+      }
+    });
+  }
+});
+
 // Route برای دریافت اطلاعات دشبورد معلم
 app.get('/api/teacher/dashboard', authenticateToken, async (req, res) => {
     const teacherId = req.user.userId;
+    console.log('درخواست دشبورد برای معلم:', teacherId);
 
     try {
         // ایجاد اتصال به پایگاه داده
         const connection = await mysql.createConnection(dbConfig);
+        console.log('اتصال به دیتابیس برقرار شد');
 
         // دریافت اطلاعات معلم
         const [teacherRows] = await connection.execute(
@@ -57,16 +113,19 @@ app.get('/api/teacher/dashboard', authenticateToken, async (req, res) => {
 
         if (teacherRows.length === 0) {
             await connection.end();
+            console.log('معلم یافت نشد با ID:', teacherId);
             return res.status(404).json({ error: 'معلم یافت نشد.' });
         }
 
         const fullname = teacherRows[0].fullname;
+        console.log('معلم یافت شد:', fullname);
 
         // دریافت اطلاعات آزمون‌ها
         const [examRows] = await connection.execute(
             'SELECT * FROM exams WHERE teacher_id = ? ORDER BY created_at DESC',
             [teacherId]
         );
+        console.log('تعداد آزمون‌های یافت شده:', examRows.length);
 
         // دریافت آمار آزمون‌های فعال
         const [activeRows] = await connection.execute(
@@ -76,6 +135,7 @@ app.get('/api/teacher/dashboard', authenticateToken, async (req, res) => {
              AND status = 'pending'`,
             [teacherId]
         );
+        console.log('آزمون‌های فعال:', activeRows[0].active_exams);
 
         // دریافت آمار آزمون‌های تکمیل شده
         const [completedRows] = await connection.execute(
@@ -85,11 +145,10 @@ app.get('/api/teacher/dashboard', authenticateToken, async (req, res) => {
              AND status = 'completed'`,
             [teacherId]
         );
+        console.log('آزمون‌های تکمیل شده:', completedRows[0].completed_exams);
 
         await connection.end();
 
-        // تبدیل تاریخ‌ها به شمسی (اگر کتابخانه jdf در دسترس باشد)
-        // در اینجا فقط تاریخ ایجاد را برمی‌گردانیم
         const recentExams = examRows.slice(0, 3).map(exam => ({
             id: exam.id,
             title: exam.title,
@@ -99,40 +158,50 @@ app.get('/api/teacher/dashboard', authenticateToken, async (req, res) => {
         }));
 
         // پاسخ به کلاینت
-        res.json({
+        const responseData = {
             fullname,
             total_exams: examRows.length,
             active_exams: activeRows[0].active_exams,
             completed_exams: completedRows[0].completed_exams,
             recent_exams: recentExams
-        });
+        };
+        
+        console.log('ارسال پاسخ با داده‌های دشبورد');
+        res.json(responseData);
 
     } catch (error) {
-        console.error('خطا در دریافت اطلاعات:', error);
-        res.status(500).json({ error: 'خطای سرور در دریافت اطلاعات' });
+        console.error('خطا در دریافت اطلاعات دشبورد:', error.message);
+        res.status(500).json({ 
+            error: 'خطای سرور در دریافت اطلاعات',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 });
 
-// Route برای لاگین (برای نمونه)
+// Route برای لاگین
 app.post('/api/teacher/login', async (req, res) => {
     const { username, password } = req.body;
+    console.log('درخواست لاگین برای کاربر:', username);
 
     try {
         const connection = await mysql.createConnection(dbConfig);
+        console.log('اتصال به دیتابیس برای لاگین برقرار شد');
 
         // بررسی اعتبار کاربر
         const [userRows] = await connection.execute(
             'SELECT id, fullname FROM users WHERE username = ? AND password = ? AND role = "teacher"',
-            [username, password] // در عمل باید از هش کردن رمز عبور استفاده شود
+            [username, password]
         );
 
         await connection.end();
 
         if (userRows.length === 0) {
+            console.log('احراز هویت ناموفق برای کاربر:', username);
             return res.status(401).json({ error: 'نام کاربری یا رمز عبور اشتباه است' });
         }
 
         const user = userRows[0];
+        console.log('احراز هویت موفق برای کاربر:', user.fullname);
 
         // ایجاد توکن JWT
         const token = jwt.sign(
@@ -151,14 +220,37 @@ app.post('/api/teacher/login', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('خطا در ورود:', error);
-        res.status(500).json({ error: 'خطای سرور در ورود به سیستم' });
+        console.error('خطا در ورود:', error.message);
+        res.status(500).json({ 
+            error: 'خطای سرور در ورود به سیستم',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 });
 
-// Routeهای دیگر برای مدیریت آزمون‌ها، دانش‌آموزان و غیره...
+// middleware برای مسیرهای پیدا نشده
+app.use('*', (req, res) => {
+  console.log('مسیر یافت نشد:', req.originalUrl);
+  res.status(404).json({ error: 'مسیر یافت نشد' });
+});
+
+// middleware برای مدیریت خطاهای全局
+app.use((error, req, res, next) => {
+  console.error('خطای سرور:', error.message);
+  res.status(500).json({ 
+    error: 'خطای داخلی سرور',
+    message: process.env.NODE_ENV === 'development' ? error.message : 'لطفاً بعداً تلاش کنید'
+  });
+});
 
 // راه اندازی سرور
 app.listen(PORT, () => {
     console.log(`سرور در حال اجرا روی پورت ${PORT}`);
+    console.log('متغیرهای محیطی:', {
+        host: process.env.DB_HOST,
+        user: process.env.DB_USER,
+        database: process.env.DB_NAME,
+        hasPassword: !!process.env.DB_PASSWORD,
+        nodeEnv: process.env.NODE_ENV
+    });
 });
