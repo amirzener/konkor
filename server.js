@@ -26,10 +26,64 @@ const dbConfig = {
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
     charset: 'utf8mb4',
-    connectTimeout: 60000, // افزایش timeout اتصال
-    acquireTimeout: 60000, // افزایش timeout کسب اتصال
-    timeout: 60000, // افزایش timeout کلی
+    connectTimeout: 60000,
+    acquireTimeout: 60000,
+    timeout: 60000,
 };
+
+// تعریف مسیر پایه برای همه APIها
+const BASE_PATH = '/konkor';
+
+// Route برای صفحه اصلی
+app.get(BASE_PATH + '/', (req, res) => {
+  res.json({
+    message: 'خوش آمدید به سیستم آزمون آنلاین',
+    version: '1.0.0',
+    endpoints: {
+      health: BASE_PATH + '/api/health',
+      testDB: BASE_PATH + '/api/test-db',
+      login: BASE_PATH + '/api/teacher/login',
+      dashboard: BASE_PATH + '/api/teacher/dashboard'
+    },
+    documentation: 'برای اطلاعات بیشتر به مستندات مراجعه کنید'
+  });
+});
+
+// Route برای تست سلامت سرور
+app.get(BASE_PATH + '/api/health', (req, res) => {
+  console.log('درخواست سلامت دریافت شد');
+  res.json({ 
+    status: 'OK', 
+    message: 'سرور فعال است',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Route برای تست اتصال به دیتابیس
+app.get(BASE_PATH + '/api/test-db', async (req, res) => {
+  console.log('تست اتصال به دیتابیس درخواست شد');
+  
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    console.log('اتصال به دیتابیس موفقیت‌آمیز بود');
+    
+    const [rows] = await connection.execute('SELECT 1 as test');
+    await connection.end();
+    
+    res.json({ 
+      status: 'OK', 
+      message: 'اتصال به دیتابیس موفقیت‌آمیز بود',
+      data: rows
+    });
+  } catch (error) {
+    console.error('خطا در اتصال به دیتابیس:', error.message);
+    res.status(500).json({ 
+      status: 'ERROR', 
+      message: 'خطا در اتصال به دیتابیس: ' + error.message
+    });
+  }
+});
 
 // Middleware برای احراز هویت
 const authenticateToken = async (req, res, next) => {
@@ -49,54 +103,12 @@ const authenticateToken = async (req, res, next) => {
         next();
     } catch (error) {
         console.error('خطا در بررسی توکن:', error.message);
-        return res.status(403).json({ error: 'توکن نامعتبر است.' });
+        return res.status(403)..json({ error: 'توکن نامعتبر است.' });
     }
 };
 
-// Route برای تست سلامت سرور
-app.get('/api/health', (req, res) => {
-  console.log('درخواست سلامت دریافت شد');
-  res.json({ 
-    status: 'OK', 
-    message: 'سرور فعال است',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
-  });
-});
-
-// Route برای تست اتصال به دیتابیس
-app.get('/api/test-db', async (req, res) => {
-  console.log('تست اتصال به دیتابیس درخواست شد');
-  
-  try {
-    const connection = await mysql.createConnection(dbConfig);
-    console.log('اتصال به دیتابیس موفقیت‌آمیز بود');
-    
-    const [rows] = await connection.execute('SELECT 1 as test');
-    await connection.end();
-    
-    res.json({ 
-      status: 'OK', 
-      message: 'اتصال به دیتابیس موفقیت‌آمیز بود',
-      data: rows
-    });
-  } catch (error) {
-    console.error('خطا در اتصال به دیتابیس:', error.message);
-    res.status(500).json({ 
-      status: 'ERROR', 
-      message: 'خطا در اتصال به دیتابیس: ' + error.message,
-      dbConfig: {
-        host: dbConfig.host,
-        user: dbConfig.user,
-        database: dbConfig.database,
-        hasPassword: !!dbConfig.password
-      }
-    });
-  }
-});
-
 // Route برای دریافت اطلاعات دشبورد معلم
-app.get('/api/teacher/dashboard', authenticateToken, async (req, res) => {
+app.get(BASE_PATH + '/api/teacher/dashboard', authenticateToken, async (req, res) => {
     const teacherId = req.user.userId;
     console.log('درخواست دشبورد برای معلم:', teacherId);
 
@@ -179,7 +191,7 @@ app.get('/api/teacher/dashboard', authenticateToken, async (req, res) => {
 });
 
 // Route برای لاگین
-app.post('/api/teacher/login', async (req, res) => {
+app.post(BASE_PATH + '/api/teacher/login', async (req, res) => {
     const { username, password } = req.body;
     console.log('درخواست لاگین برای کاربر:', username);
 
@@ -246,6 +258,7 @@ app.use((error, req, res, next) => {
 // راه اندازی سرور
 app.listen(PORT, () => {
     console.log(`سرور در حال اجرا روی پورت ${PORT}`);
+    console.log('مسیر پایه:', BASE_PATH);
     console.log('متغیرهای محیطی:', {
         host: process.env.DB_HOST,
         user: process.env.DB_USER,
