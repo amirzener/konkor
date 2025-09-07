@@ -103,7 +103,7 @@ const authenticateToken = async (req, res, next) => {
         next();
     } catch (error) {
         console.error('خطا در بررسی توکن:', error.message);
-        return res.status(403)..json({ error: 'توکن نامعتبر است.' });
+        return res.status(403).json({ error: 'توکن نامعتبر است.' }); // این خطا اصلاح شد
     }
 };
 
